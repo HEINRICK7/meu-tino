@@ -1,0 +1,25 @@
+:root {
+  --tino-brand: #008f46;
+  --tino-brand-bright: #00b83e;
+  --tino-brand-dark: #004c35;
+  --tino-text: #0b1d37;
+  --tino-muted: #5b6b81;
+  --tino-surface: #ffffff;
+  --tino-background: #f5fcf7;
+  --tino-positive: #008f46;
+  --tino-purchase: #f46616;
+  --tino-agreement: #0866ff;
+  --tino-reminder: #e92830;
+}
+.tino-illustration {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+.tino-icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  color: var(--tino-brand);
+}
