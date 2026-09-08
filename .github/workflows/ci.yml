@@ -38,3 +38,11 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  deploy-vps:
+    name: Deploy PWA to VPS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    uses: HEINRICK7/backend-tino/.github/workflows/deploy-pwa-vps.yml@main
+    with:
+      pwa_ref: ${{ github.sha }}
