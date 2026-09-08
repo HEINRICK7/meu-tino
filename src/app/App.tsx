@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Link,
   Navigate,
@@ -7,18 +15,21 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  useOutletContext,
   useParams,
 } from "react-router-dom";
-import { api, ApiError } from "../shared/api/client";
+import { api, ApiError, createIdempotencyKey } from "../shared/api/client";
 import type { ActivityItem, MeResponse } from "../shared/api/types";
 import { formatDate, formatMinorAmount } from "../shared/formatting/money";
 import styles from "./App.module.css";
 
-type SessionStatus = "loading" | "authenticated" | "anonymous" | "unavailable";
+type SessionStatus =
+  "loading" | "authenticated" | "anonymous" | "forbidden" | "unavailable";
 
 type SessionContextValue = {
   me: MeResponse | null;
   status: SessionStatus;
+  error: ApiError | null;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -31,7 +42,6 @@ const SessionContext = ({
   value: SessionContextValue;
 }) => <SessionContextProvider value={value}>{children}</SessionContextProvider>;
 
-import { createContext, useContext } from "react";
 const SessionContextStore = createContext<SessionContextValue | null>(null);
 function SessionContextProvider({
   children,
@@ -55,27 +65,35 @@ function useSession() {
 export default function App() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [status, setStatus] = useState<SessionStatus>("loading");
+  const [error, setError] = useState<ApiError | null>(null);
 
   const refresh = useCallback(async () => {
     setStatus("loading");
+    setError(null);
     try {
       setMe(await api.getMe());
       setStatus("authenticated");
     } catch (error) {
       setMe(null);
-      setStatus(
-        error instanceof ApiError && error.status === 401
-          ? "anonymous"
-          : "unavailable",
-      );
+      setError(error instanceof ApiError ? error : null);
+      if (error instanceof ApiError && error.status === 401) {
+        setStatus("anonymous");
+      } else if (error instanceof ApiError && error.status === 403) {
+        setStatus("forbidden");
+      } else {
+        setStatus("unavailable");
+      }
     }
   }, []);
 
   const logout = useCallback(async () => {
     try {
       await api.logout();
+    } catch {
+      // Clear the local view even when the server is already unavailable.
     } finally {
       setMe(null);
+      setError(null);
       setStatus("anonymous");
     }
   }, []);
@@ -85,8 +103,8 @@ export default function App() {
   }, [refresh]);
 
   const session = useMemo(
-    () => ({ me, status, refresh, logout }),
-    [logout, me, refresh, status],
+    () => ({ me, status, error, refresh, logout }),
+    [error, logout, me, refresh, status],
   );
 
   return (
@@ -110,9 +128,18 @@ export default function App() {
 }
 
 function SessionBoundary() {
-  const { status } = useSession();
+  const { status, error, refresh } = useSession();
   if (status === "loading") return <LoadingPage label="Abrindo seu espaço…" />;
-  if (status === "unavailable") return <UnavailablePage />;
+  if (status === "forbidden") {
+    return (
+      <ForbiddenPage correlationId={error?.correlationId} onRetry={refresh} />
+    );
+  }
+  if (status === "unavailable") {
+    return (
+      <UnavailablePage correlationId={error?.correlationId} onRetry={refresh} />
+    );
+  }
   if (status === "anonymous") return <Navigate to="/welcome" replace />;
   return <Outlet />;
 }
@@ -189,15 +216,19 @@ function AppShell() {
 }
 
 function HomePage() {
-  const { me } = useSession();
+  const { me, refresh } = useSession();
   const { installEvent, setInstallEvent } = useAppShellContext();
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [activityState, setActivityState] = useState<
     "loading" | "ready" | "error"
   >("loading");
+  const [activityError, setActivityError] = useState<unknown>(null);
+  const [activityReload, setActivityReload] = useState(0);
 
   useEffect(() => {
     let active = true;
+    setActivityState("loading");
+    setActivityError(null);
     void api
       .listActivity({ limit: 4 })
       .then((response) => {
@@ -205,11 +236,23 @@ function HomePage() {
         setActivity(response.items);
         setActivityState("ready");
       })
-      .catch(() => active && setActivityState("error"));
+      .catch((error: unknown) => {
+        if (!active) return;
+        setActivityError(error);
+        setActivityState("error");
+      });
     return () => {
       active = false;
     };
-  }, []);
+  }, [activityReload]);
+
+  const retryActivity = () => {
+    if (isUnauthenticatedError(activityError)) {
+      void refresh().then(() => setActivityReload((value) => value + 1));
+      return;
+    }
+    setActivityReload((value) => value + 1);
+  };
 
   if (!me) return null;
   return (
@@ -223,9 +266,9 @@ function HomePage() {
             {me.business.displayName}.
           </p>
         </div>
-        <div className={styles.heroStamp} aria-hidden="true">
-          <span>tino</span>
-          <strong>✓</strong>
+        <div className={styles.heroBusiness}>
+          <TinoBadge name="mercadinho" className={styles.heroBadge} />
+          <span>{me.business.displayName}</span>
         </div>
       </section>
 
@@ -269,8 +312,8 @@ function HomePage() {
       </section>
 
       {activityState === "loading" && <ActivitySkeleton />}
-      {activityState === "error" && (
-        <InlineError message="Não conseguimos carregar o extrato agora." />
+      {activityState === "error" && activityError && (
+        <ActivityErrorNotice error={activityError} onRetry={retryActivity} />
       )}
       {activityState === "ready" && activity.length === 0 && <EmptyActivity />}
       {activityState === "ready" && activity.length > 0 && (
@@ -281,18 +324,78 @@ function HomePage() {
 }
 
 function ActivityPage() {
+  const { refresh } = useSession();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<unknown>(null);
+  const [loadMoreError, setLoadMoreError] = useState<unknown>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const loadPage = useCallback(
+    async (cursor: string | null, append: boolean) => {
+      if (append) {
+        setLoadingMore(true);
+        setLoadMoreError(null);
+      } else {
+        setState("loading");
+        setItems([]);
+        setNextCursor(null);
+        setRequestError(null);
+        setLoadMoreError(null);
+      }
+      try {
+        const result = await api.listActivity({
+          limit: 20,
+          cursor: cursor ?? undefined,
+        });
+        if (append) {
+          setItems((current) => [...current, ...result.items]);
+        } else {
+          setItems(result.items);
+        }
+        setNextCursor(result.nextCursor);
+        setState("ready");
+      } catch (error: unknown) {
+        if (append) {
+          setLoadMoreError(error);
+        } else {
+          setRequestError(error);
+          setState("error");
+        }
+      } finally {
+        if (append) setLoadingMore(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
-    void api
-      .listActivity({ limit: 50 })
-      .then((result) => {
-        setItems(result.items);
-        setState("ready");
-      })
-      .catch(() => setState("error"));
-  }, []);
+    void loadPage(null, false);
+  }, [loadPage, reloadKey]);
+
+  const retryActivity = () => {
+    if (isUnauthenticatedError(requestError)) {
+      void refresh().then(() => setReloadKey((value) => value + 1));
+      return;
+    }
+    setReloadKey((value) => value + 1);
+  };
+
+  const loadMore = () => {
+    if (!nextCursor || loadingMore) return;
+    void loadPage(nextCursor, true);
+  };
+
+  const retryLoadMore = () => {
+    if (!nextCursor || loadingMore) return;
+    if (isUnauthenticatedError(loadMoreError)) {
+      void refresh().then(() => void loadPage(nextCursor, true));
+      return;
+    }
+    void loadPage(nextCursor, true);
+  };
 
   return (
     <>
@@ -302,30 +405,65 @@ function ActivityPage() {
         <p>Uma visão simples de cada compra e pagamento confirmado.</p>
       </section>
       {state === "loading" && <ActivitySkeleton rows={5} />}
-      {state === "error" && (
-        <InlineError message="Não conseguimos carregar o extrato agora." />
+      {state === "error" && requestError && (
+        <ActivityErrorNotice error={requestError} onRetry={retryActivity} />
       )}
       {state === "ready" && items.length === 0 && <EmptyActivity />}
       {state === "ready" && items.length > 0 && <ActivityList items={items} />}
+      {state === "ready" && items.length > 0 && nextCursor && (
+        <div className={styles.loadMoreRow}>
+          <button
+            className={styles.secondaryButton}
+            type="button"
+            onClick={loadMore}
+            disabled={loadingMore}
+          >
+            {loadingMore ? "Carregando…" : "Carregar mais"}
+          </button>
+        </div>
+      )}
+      {loadMoreError && (
+        <ActivityErrorNotice error={loadMoreError} onRetry={retryLoadMore} />
+      )}
     </>
   );
 }
 
 function ActivityDetailPage() {
   const { activityId } = useParams();
+  const { refresh } = useSession();
   const [activity, setActivity] = useState<ActivityItem | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [requestError, setRequestError] = useState<unknown>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    if (!activityId) return;
+    if (!activityId) {
+      setRequestError(new Error("Missing activity id"));
+      setState("error");
+      return;
+    }
+    setState("loading");
+    setRequestError(null);
     void api
       .getActivity(activityId)
       .then((result) => {
         setActivity(result);
         setState("ready");
       })
-      .catch(() => setState("error"));
-  }, [activityId]);
+      .catch((error: unknown) => {
+        setRequestError(error);
+        setState("error");
+      });
+  }, [activityId, reloadKey]);
+
+  const retryActivity = () => {
+    if (isUnauthenticatedError(requestError)) {
+      void refresh().then(() => setReloadKey((value) => value + 1));
+      return;
+    }
+    setReloadKey((value) => value + 1);
+  };
 
   return (
     <>
@@ -337,8 +475,8 @@ function ActivityDetailPage() {
         <h1>Registro da caderneta</h1>
       </section>
       {state === "loading" && <ActivitySkeleton rows={1} />}
-      {state === "error" && (
-        <InlineError message="Essa movimentação não está disponível." />
+      {state === "error" && requestError && (
+        <ActivityErrorNotice error={requestError} onRetry={retryActivity} />
       )}
       {state === "ready" && activity && (
         <ActivityDetailCard activity={activity} />
@@ -351,59 +489,97 @@ function ActivationPage() {
   const { token } = useParams();
   const navigate = useNavigate();
   const { refresh } = useSession();
-  const [state, setState] = useState<"activating" | "success" | "error">(
-    "activating",
-  );
-  const [message, setMessage] = useState("Validando seu convite…");
+  const [state, setState] = useState<"activating" | "error">("activating");
+  const [error, setError] = useState<unknown>(null);
+  const [retryKey, setRetryKey] = useState(0);
+  const activationRequest = useRef<{
+    token: string;
+    idempotencyKey: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!token) {
       setState("error");
-      setMessage("Este convite não está completo.");
+      setError(new ApiError(400, "INVALID_REQUEST", "Convite incompleto."));
       return;
     }
+
+    const currentRequest =
+      activationRequest.current?.token === token
+        ? activationRequest.current
+        : {
+            token,
+            idempotencyKey: createIdempotencyKey(),
+          };
+    activationRequest.current = currentRequest;
+    setState("activating");
+    setError(null);
+
     void api
-      .activate(token)
+      .activate(token, { idempotencyKey: currentRequest.idempotencyKey })
       .then(async () => {
-        window.history.replaceState({}, document.title, "/");
+        // Navigating with replace removes the invite token from browser history.
+        navigate("/", { replace: true });
         await refresh();
-        setState("success");
-        setMessage("Tudo certo. Abrindo seu espaço…");
-        window.setTimeout(() => navigate("/", { replace: true }), 500);
       })
       .catch((error: unknown) => {
         setState("error");
-        setMessage(
-          error instanceof ApiError && error.status === 410
-            ? "Este convite expirou. Peça um novo link ao comerciante."
-            : "Não foi possível ativar este convite.",
-        );
+        setError(error);
       });
-  }, [navigate, refresh, token]);
+  }, [navigate, refresh, retryKey, token]);
+
+  const issue = error ? describeActivationError(error) : null;
 
   return (
-    <div className={styles.centerPage}>
+    <div className={styles.centerPage} data-state={issue?.kind ?? state}>
       <LogoMark large />
+      <WelcomeIllustration />
       <p className={styles.eyebrow}>Meu TINO</p>
-      <h1>{state === "success" ? "Bem-vindo." : "Seu espaço começa aqui."}</h1>
-      <p className={styles.centerCopy}>{message}</p>
+      <h1>Seu espaço começa aqui.</h1>
+      <p className={styles.centerCopy}>
+        {state === "activating" ? "Validando seu convite…" : issue?.message}
+      </p>
       {state === "activating" && <Spinner />}
-      {state === "error" && (
+      {state === "error" && issue?.retryable && (
+        <button
+          className={styles.primaryButton}
+          type="button"
+          onClick={() => setRetryKey((value) => value + 1)}
+        >
+          <TinoIcon name="refresh" /> Tentar novamente
+        </button>
+      )}
+      {state === "error" && !issue?.retryable && (
         <Link className={styles.primaryButton} to="/welcome">
           Voltar ao início
         </Link>
+      )}
+      {issue?.correlationId && (
+        <p className={styles.correlationNote}>
+          Código de atendimento: {issue.correlationId}
+        </p>
       )}
     </div>
   );
 }
 
 function PublicPage() {
-  const { status } = useSession();
+  const { status, error, refresh } = useSession();
   if (status === "loading") return <LoadingPage label="Abrindo o Meu TINO…" />;
-  if (status === "unavailable") return <UnavailablePage />;
+  if (status === "forbidden") {
+    return (
+      <ForbiddenPage correlationId={error?.correlationId} onRetry={refresh} />
+    );
+  }
+  if (status === "unavailable") {
+    return (
+      <UnavailablePage correlationId={error?.correlationId} onRetry={refresh} />
+    );
+  }
   return (
-    <div className={styles.centerPage}>
+    <div className={styles.centerPage} data-state="unauthenticated">
       <LogoMark large />
+      <WelcomeIllustration />
       <p className={styles.eyebrow}>Meu TINO</p>
       <h1>Acompanhe sua caderneta sem complicação.</h1>
       <p className={styles.centerCopy}>
@@ -421,10 +597,20 @@ function PublicPage() {
   );
 }
 
-function UnavailablePage() {
+function UnavailablePage({
+  correlationId,
+  onRetry,
+}: {
+  correlationId?: string;
+  onRetry: () => Promise<void>;
+}) {
   return (
-    <div className={styles.centerPage}>
+    <div className={styles.centerPage} data-state="unavailable">
       <LogoMark large />
+      <TinoBadge
+        name="conexao-indisponivel"
+        className={styles.unavailableBadge}
+      />
       <p className={styles.eyebrow}>Conexão indisponível</p>
       <h1>Seu espaço está seguro.</h1>
       <p className={styles.centerCopy}>
@@ -434,10 +620,47 @@ function UnavailablePage() {
       <button
         className={styles.primaryButton}
         type="button"
-        onClick={() => window.location.reload()}
+        onClick={() => void onRetry()}
       >
-        Tentar novamente
+        <TinoIcon name="refresh" /> Tentar novamente
       </button>
+      {correlationId && (
+        <p className={styles.correlationNote}>
+          Código de atendimento: {correlationId}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ForbiddenPage({
+  correlationId,
+  onRetry,
+}: {
+  correlationId?: string;
+  onRetry: () => Promise<void>;
+}) {
+  return (
+    <div className={styles.centerPage} data-state="forbidden">
+      <LogoMark large />
+      <p className={styles.eyebrow}>Acesso indisponível</p>
+      <h1>Seu espaço precisa de atenção.</h1>
+      <p className={styles.centerCopy}>
+        Este acesso não está liberado no momento. Fale com o comerciante para
+        verificar sua caderneta.
+      </p>
+      <button
+        className={styles.primaryButton}
+        type="button"
+        onClick={() => void onRetry()}
+      >
+        <TinoIcon name="refresh" /> Tentar novamente
+      </button>
+      {correlationId && (
+        <p className={styles.correlationNote}>
+          Código de atendimento: {correlationId}
+        </p>
+      )}
     </div>
   );
 }
@@ -463,9 +686,7 @@ function InstallCard({
   if (!installEvent)
     return (
       <article className={styles.utilityCard}>
-        <div className={styles.utilityIcon}>
-          <PhoneIcon />
-        </div>
+        <TinoBadge name="mercadinho" className={styles.utilityBadge} />
         <div>
           <p className={styles.cardKicker}>Sempre por perto</p>
           <h3>Adicione à tela inicial</h3>
@@ -482,9 +703,7 @@ function InstallCard({
   };
   return (
     <article className={styles.utilityCard}>
-      <div className={styles.utilityIcon}>
-        <PhoneIcon />
-      </div>
+      <TinoBadge name="mercadinho" className={styles.utilityBadge} />
       <div>
         <p className={styles.cardKicker}>Sempre por perto</p>
         <h3>Leve o Meu TINO com você</h3>
@@ -572,9 +791,7 @@ function PushCard({ enabled }: { enabled: boolean }) {
   }[state];
   return (
     <article className={styles.utilityCard}>
-      <div className={`${styles.utilityIcon} ${styles.pushIcon}`}>
-        <BellIcon />
-      </div>
+      <TinoBadge name="notificacoes" className={styles.utilityBadge} />
       <div>
         <p className={styles.cardKicker}>{copy[0]}</p>
         <h3>{copy[1]}</h3>
@@ -617,11 +834,10 @@ function ActivityRow({ item }: { item: ActivityItem }) {
     item.type === "PAYMENT_CONFIRMED" || item.impact === "DECREASES_BALANCE";
   return (
     <Link className={styles.activityRow} to={`/activity/${item.id}`}>
-      <span
-        className={`${styles.activityIcon} ${isPayment ? styles.paymentActivity : styles.debtActivity}`}
-      >
-        {isPayment ? <ArrowDownIcon /> : <ArrowUpIcon />}
-      </span>
+      <TinoBadge
+        name={isPayment ? "pagamento-recebido" : "compra-fiada"}
+        className={styles.activityBadge}
+      />
       <span className={styles.activityText}>
         <strong>{item.label}</strong>
         <small>{formatDate(item.occurredAt)}</small>
@@ -641,11 +857,10 @@ function ActivityDetailCard({ activity }: { activity: ActivityItem }) {
     activity.impact === "DECREASES_BALANCE";
   return (
     <article className={styles.detailCard}>
-      <span
-        className={`${styles.detailIcon} ${isPayment ? styles.paymentActivity : styles.debtActivity}`}
-      >
-        {isPayment ? <ArrowDownIcon /> : <ArrowUpIcon />}
-      </span>
+      <TinoBadge
+        name={isPayment ? "pagamento-recebido" : "compra-fiada"}
+        className={styles.detailBadge}
+      />
       <p className={styles.cardKicker}>
         {isPayment ? "Pagamento confirmado" : "Compra registrada"}
       </p>
@@ -679,7 +894,7 @@ function ActivitySkeleton({ rows = 3 }: { rows?: number }) {
 function EmptyActivity() {
   return (
     <div className={styles.emptyState}>
-      <div className={styles.emptyMark}>✦</div>
+      <TinoBadge name="ver-extrato" className={styles.emptyBadge} />
       <h3>Seu extrato está tranquilo.</h3>
       <p>
         Quando houver uma compra ou pagamento confirmado, ele aparecerá aqui.
@@ -687,6 +902,81 @@ function EmptyActivity() {
     </div>
   );
 }
+
+function isUnauthenticatedError(error: unknown) {
+  return error instanceof ApiError && error.status === 401;
+}
+
+function describeActivationError(error: unknown) {
+  if (error instanceof ApiError) {
+    if (error.status === 410) {
+      return {
+        kind: "expired",
+        message: "Este convite expirou. Peça um novo link ao comerciante.",
+        retryable: false,
+        correlationId: error.correlationId,
+      };
+    }
+    if (error.status >= 500) {
+      return {
+        kind: "unavailable",
+        message: "O convite não pôde ser validado agora. Tente novamente.",
+        retryable: true,
+        correlationId: error.correlationId,
+      };
+    }
+    return {
+      kind: "invalid",
+      message: error.message || "Este convite não pôde ser validado.",
+      retryable: false,
+      correlationId: error.correlationId,
+    };
+  }
+  return {
+    kind: "unavailable",
+    message: "Não foi possível validar o convite. Tente novamente.",
+    retryable: true,
+  };
+}
+
+function ActivityErrorNotice({
+  error,
+  onRetry,
+}: {
+  error: unknown;
+  onRetry: () => void;
+}) {
+  const message = isUnauthenticatedError(error)
+    ? "Sua sessão expirou. Atualize para tentar novamente."
+    : error instanceof ApiError && error.status === 403
+      ? "Seu acesso não está liberado neste momento."
+      : error instanceof ApiError
+        ? error.message
+        : "Não conseguimos carregar o extrato agora.";
+  const correlationId =
+    error instanceof ApiError ? error.correlationId : undefined;
+  return (
+    <div className={styles.inlineError} role="status">
+      <WarningIcon />
+      <div className={styles.errorContent}>
+        <span>{message}</span>
+        <button
+          className={styles.secondaryButton}
+          type="button"
+          onClick={onRetry}
+        >
+          Tentar novamente
+        </button>
+        {correlationId && (
+          <small className={styles.correlationNote}>
+            Código de atendimento: {correlationId}
+          </small>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InlineError({ message }: { message: string }) {
   return (
     <div className={styles.inlineError}>
@@ -703,7 +993,6 @@ function useAppShellContext() {
     setInstallEvent: (event: BeforeInstallPromptEvent | null) => void;
   };
 }
-import { useOutletContext } from "react-router-dom";
 function firstName(name: string) {
   return name.trim().split(/\s+/)[0] || "você";
 }
@@ -717,14 +1006,95 @@ function Spinner() {
   return <span className={styles.spinner} aria-label="Carregando" />;
 }
 function LogoMark({ large = false }: { large?: boolean }) {
+  return large ? (
+    <img
+      className={styles.logoMarkLarge}
+      src="/tino/brand/meu-tino-logo.webp"
+      alt="Meu TINO"
+      width="340"
+      height="64"
+    />
+  ) : (
+    <img
+      className={styles.logoMark}
+      src="/tino/brand/tino-logo.webp"
+      alt="Meu TINO"
+      width="129"
+      height="38"
+    />
+  );
+}
+
+function WelcomeIllustration() {
   return (
-    <span
-      className={large ? styles.logoMarkLarge : styles.logoMark}
-      aria-hidden="true"
+    <picture className={styles.welcomeIllustration}>
+      <source
+        type="image/webp"
+        srcSet="/tino/illustrations/boas-vindas-320.webp 320w, /tino/illustrations/boas-vindas-640.webp 640w, /tino/illustrations/boas-vindas-960.webp 960w"
+        sizes="(max-width: 680px) calc(100vw - 48px), 360px"
+      />
+      <img
+        src="/tino/illustrations/boas-vindas.png"
+        alt=""
+        width="960"
+        height="640"
+      />
+    </picture>
+  );
+}
+
+type TinoIconName =
+  | "home"
+  | "file-text"
+  | "chevron-right"
+  | "chevron-left"
+  | "arrow-up"
+  | "arrow-down"
+  | "bell"
+  | "download"
+  | "shield-check"
+  | "info"
+  | "refresh";
+
+function TinoIcon({
+  name,
+  className,
+  decorative = true,
+}: {
+  name: TinoIconName;
+  className?: string;
+  decorative?: boolean;
+}) {
+  return (
+    <svg
+      className={`${styles.svgIcon} ${className ?? ""}`}
+      viewBox="0 0 24 24"
+      aria-hidden={decorative ? true : undefined}
+      focusable="false"
     >
-      <span>T</span>
-      <i />
-    </span>
+      <use href={`/tino/icons/sprite.svg#tino-${name}`} />
+    </svg>
+  );
+}
+
+function TinoBadge({
+  name,
+  alt = "",
+  className,
+}: {
+  name: string;
+  alt?: string;
+  className?: string;
+}) {
+  return (
+    <img
+      className={className}
+      src={`/tino/badges/${name}.svg`}
+      alt={alt}
+      width="128"
+      height="128"
+      loading="lazy"
+    />
   );
 }
 
@@ -734,75 +1104,32 @@ type BeforeInstallPromptEvent = Event & {
 };
 
 function HomeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m4 10 8-6 8 6v9a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9Z" />
-    </svg>
-  );
+  return <TinoIcon name="home" />;
 }
 function ActivityIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M5 4v16M5 8h10a3 3 0 0 1 0 6H5m0 0h11a3 3 0 0 1 0 6H5" />
-    </svg>
-  );
+  return <TinoIcon name="file-text" />;
 }
 function ArrowIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m9 5 7 7-7 7" />
-    </svg>
-  );
+  return <TinoIcon name="chevron-right" />;
 }
 function ArrowLeftIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m15 5-7 7 7 7M8 12h11" />
-    </svg>
-  );
+  return <TinoIcon name="chevron-left" />;
 }
 function ArrowUpIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 19V5m-5 5 5-5 5 5" />
-    </svg>
-  );
+  return <TinoIcon name="arrow-up" />;
 }
 function ArrowDownIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 5v14m5-5-5 5-5-5" />
-    </svg>
-  );
+  return <TinoIcon name="arrow-down" />;
 }
 function BellIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
-    </svg>
-  );
+  return <TinoIcon name="bell" />;
 }
 function PhoneIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="6" y="3" width="12" height="18" rx="3" />
-      <path d="M10 18h4M10 6h4" />
-    </svg>
-  );
+  return <TinoIcon name="download" />;
 }
 function ShieldIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 3 20 6v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-3Z" />
-      <path d="m8.5 12 2.2 2.2 4.8-5" />
-    </svg>
-  );
+  return <TinoIcon name="shield-check" />;
 }
 function WarningIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m12 4 9 16H3l9-16Z" />
-      <path d="M12 9v5m0 3h.01" />
-    </svg>
-  );
+  return <TinoIcon name="info" />;
 }
