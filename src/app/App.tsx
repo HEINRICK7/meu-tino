@@ -476,7 +476,11 @@ function ActivityDetailPage() {
       </section>
       {state === "loading" && <ActivitySkeleton rows={1} />}
       {state === "error" && requestError && (
-        <ActivityErrorNotice error={requestError} onRetry={retryActivity} />
+        <ActivityErrorNotice
+          detail
+          error={requestError}
+          onRetry={retryActivity}
+        />
       )}
       {state === "ready" && activity && (
         <ActivityDetailCard activity={activity} />
@@ -907,59 +911,173 @@ function isUnauthenticatedError(error: unknown) {
   return error instanceof ApiError && error.status === 401;
 }
 
-function describeActivationError(error: unknown) {
-  if (error instanceof ApiError) {
-    if (error.status === 410) {
-      return {
-        kind: "expired",
-        message: "Este convite expirou. Peça um novo link ao comerciante.",
-        retryable: false,
-        correlationId: error.correlationId,
-      };
-    }
-    if (error.status >= 500) {
-      return {
-        kind: "unavailable",
-        message: "O convite não pôde ser validado agora. Tente novamente.",
-        retryable: true,
-        correlationId: error.correlationId,
-      };
-    }
+type UserFacingIssue = {
+  kind: string;
+  message: string;
+  retryable: boolean;
+  correlationId?: string;
+};
+
+function describeActivationError(error: unknown): UserFacingIssue {
+  if (!(error instanceof ApiError)) {
+    return {
+      kind: "unavailable",
+      message: "Não foi possível validar o convite. Tente novamente.",
+      retryable: true,
+    };
+  }
+
+  const correlationId = error.correlationId;
+  if (error.status === 400) {
     return {
       kind: "invalid",
-      message: error.message || "Este convite não pôde ser validado.",
+      message: "Este convite não é válido. Peça um novo link ao comerciante.",
       retryable: false,
-      correlationId: error.correlationId,
+      correlationId,
+    };
+  }
+  if (error.status === 401) {
+    return {
+      kind: "unauthenticated",
+      message: "Não foi possível validar este convite. Abra o link novamente.",
+      retryable: false,
+      correlationId,
+    };
+  }
+  if (error.status === 403) {
+    return {
+      kind: "forbidden",
+      message: "Este convite não pode ser usado neste momento.",
+      retryable: false,
+      correlationId,
+    };
+  }
+  if (error.status === 410) {
+    return {
+      kind: "expired",
+      message: "Este convite expirou. Peça um novo link ao comerciante.",
+      retryable: false,
+      correlationId,
+    };
+  }
+  if (error.status === 409 || error.status === 429) {
+    return {
+      kind: "retry",
+      message: "Não foi possível concluir a ativação agora. Tente novamente.",
+      retryable: true,
+      correlationId,
+    };
+  }
+  if (error.status >= 500) {
+    return {
+      kind: "unavailable",
+      message: "O convite não pôde ser validado agora. Tente novamente.",
+      retryable: true,
+      correlationId,
     };
   }
   return {
-    kind: "unavailable",
-    message: "Não foi possível validar o convite. Tente novamente.",
-    retryable: true,
+    kind: "invalid",
+    message: "Este convite não pôde ser validado.",
+    retryable: false,
+    correlationId,
   };
 }
 
 function ActivityErrorNotice({
   error,
   onRetry,
+  detail = false,
 }: {
   error: unknown;
   onRetry: () => void;
+  detail?: boolean;
 }) {
-  const message = isUnauthenticatedError(error)
-    ? "Sua sessão expirou. Atualize para tentar novamente."
-    : error instanceof ApiError && error.status === 403
-      ? "Seu acesso não está liberado neste momento."
-      : error instanceof ApiError
-        ? error.message
-        : "Não conseguimos carregar o extrato agora.";
+  const issue = describeActivityError(error, detail);
+  return (
+    <InlineError
+      correlationId={issue.correlationId}
+      kind={issue.kind}
+      message={issue.message}
+      onRetry={issue.retryable ? onRetry : undefined}
+    />
+  );
+}
+
+function describeActivityError(
+  error: unknown,
+  detail: boolean,
+): UserFacingIssue {
   const correlationId =
     error instanceof ApiError ? error.correlationId : undefined;
+  if (error instanceof ApiError && error.status === 401) {
+    return {
+      kind: "unauthenticated",
+      message: "Sua sessão expirou. Atualize para tentar novamente.",
+      retryable: true,
+      correlationId,
+    };
+  }
+  if (error instanceof ApiError && error.status === 403) {
+    return {
+      kind: "forbidden",
+      message: "Seu acesso não está liberado neste momento.",
+      retryable: false,
+      correlationId,
+    };
+  }
+  if (
+    error instanceof ApiError &&
+    (error.status === 404 || error.status === 410)
+  ) {
+    return {
+      kind: "unavailable",
+      message: detail
+        ? "Essa movimentação não está disponível."
+        : "O extrato não está disponível.",
+      retryable: false,
+      correlationId,
+    };
+  }
+  if (error instanceof ApiError && error.status >= 500) {
+    return {
+      kind: "unavailable",
+      message: "Não conseguimos carregar o extrato agora. Tente novamente.",
+      retryable: true,
+      correlationId,
+    };
+  }
+  return {
+    kind: "retry",
+    message: "Não conseguimos carregar o extrato agora. Tente novamente.",
+    retryable: true,
+    correlationId,
+  };
+}
+
+function InlineError({
+  correlationId,
+  kind = "error",
+  message,
+  onRetry,
+}: {
+  correlationId?: string;
+  kind?: string;
+  message: string;
+  onRetry?: () => void;
+}) {
   return (
-    <div className={styles.inlineError} role="status">
+    <div className={styles.inlineError} data-state={kind} role="alert">
       <WarningIcon />
       <div className={styles.errorContent}>
         <span>{message}</span>
+        {correlationId && (
+          <small className={styles.correlationNote}>
+            Código de atendimento: {correlationId}
+          </small>
+        )}
+      </div>
+      {onRetry && (
         <button
           className={styles.secondaryButton}
           type="button"
@@ -967,31 +1085,15 @@ function ActivityErrorNotice({
         >
           Tentar novamente
         </button>
-        {correlationId && (
-          <small className={styles.correlationNote}>
-            Código de atendimento: {correlationId}
-          </small>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function InlineError({ message }: { message: string }) {
-  return (
-    <div className={styles.inlineError}>
-      <WarningIcon />
-      <span>{message}</span>
+      )}
     </div>
   );
 }
 function useAppShellContext() {
-  return (
-    useOutletContext as typeof import("react-router-dom").useOutletContext
-  )() as {
+  return useOutletContext<{
     installEvent: BeforeInstallPromptEvent | null;
     setInstallEvent: (event: BeforeInstallPromptEvent | null) => void;
-  };
+  }>();
 }
 function firstName(name: string) {
   return name.trim().split(/\s+/)[0] || "você";
