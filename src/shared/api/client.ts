@@ -39,7 +39,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   let payload: ApiErrorPayload = {};
   try {
-    payload = (await response.json()) as ApiErrorPayload;
+    const candidate: unknown = await response.json();
+    if (candidate && typeof candidate === "object") {
+      payload = candidate as ApiErrorPayload;
+    }
   } catch {
     /* Preserve the HTTP status for non-JSON errors. */
   }
@@ -51,16 +54,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   );
 }
 
-function idempotencyKey() {
+export function createIdempotencyKey() {
   return crypto.randomUUID();
 }
 
+type ActivationOptions = { idempotencyKey?: string };
+
 export const api = {
   getMe: () => request<MeResponse>("/v1/me"),
-  activate: (token: string) =>
+  activate: (token: string, options: ActivationOptions = {}) =>
     request<{ status: string }>("/v1/customer-channel/activation", {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: {
+        "Idempotency-Key": options.idempotencyKey ?? createIdempotencyKey(),
+      },
       body: JSON.stringify({ token }),
     }),
   listActivity: (options: { limit?: number; cursor?: string } = {}) => {
@@ -75,7 +82,7 @@ export const api = {
   registerPushSubscription: (subscription: PushSubscriptionJSON) =>
     request<{ id: string; status: string }>("/v1/me/push-subscriptions", {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: { "Idempotency-Key": createIdempotencyKey() },
       body: JSON.stringify({
         endpoint: subscription.endpoint,
         keys: subscription.keys,
