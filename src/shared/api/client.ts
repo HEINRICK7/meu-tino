@@ -1,0 +1,88 @@
+import type {
+  ActivityItem,
+  ActivityPage,
+  ApiErrorPayload,
+  MeResponse,
+  PushConfig,
+} from "./types";
+
+const baseUrl = (import.meta.env.VITE_API_BASE_URL || "/api").replace(
+  /\/+$/,
+  "",
+);
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string,
+    public readonly correlationId?: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  if (init.body) headers.set("Content-Type", "application/json");
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers,
+    credentials: "include",
+  });
+  if (response.ok)
+    return response.status === 204
+      ? (undefined as T)
+      : ((await response.json()) as T);
+
+  let payload: ApiErrorPayload = {};
+  try {
+    payload = (await response.json()) as ApiErrorPayload;
+  } catch {
+    /* Preserve the HTTP status for non-JSON errors. */
+  }
+  throw new ApiError(
+    response.status,
+    payload.code || "UNKNOWN",
+    payload.message || "Não foi possível concluir a operação.",
+    payload.correlationId,
+  );
+}
+
+function idempotencyKey() {
+  return crypto.randomUUID();
+}
+
+export const api = {
+  getMe: () => request<MeResponse>("/v1/me"),
+  activate: (token: string) =>
+    request<{ status: string }>("/v1/customer-channel/activation", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey() },
+      body: JSON.stringify({ token }),
+    }),
+  listActivity: (options: { limit?: number; cursor?: string } = {}) => {
+    const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
+    if (options.cursor) params.set("cursor", options.cursor);
+    return request<ActivityPage>(`/v1/me/activity?${params.toString()}`);
+  },
+  getActivity: (activityId: string) =>
+    request<ActivityItem>(`/v1/me/activity/${encodeURIComponent(activityId)}`),
+  logout: () => request<void>("/v1/me/logout", { method: "POST" }),
+  getPushConfig: () => request<PushConfig>("/v1/me/push-config"),
+  registerPushSubscription: (subscription: PushSubscriptionJSON) =>
+    request<{ id: string; status: string }>("/v1/me/push-subscriptions", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey() },
+      body: JSON.stringify({
+        endpoint: subscription.endpoint,
+        keys: subscription.keys,
+      }),
+    }),
+};
+
+export function getApiBaseUrl() {
+  return baseUrl;
+}
