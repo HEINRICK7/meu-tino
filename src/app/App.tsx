@@ -420,10 +420,7 @@ function HomePage() {
           installEvent={installEvent}
           onInstalled={() => setInstallEvent(null)}
         />
-        <PushCard
-          enabled={me.features.push}
-          activeSubscriptions={me.push.activeSubscriptions}
-        />
+        <PushCard activeSubscriptions={me.push.activeSubscriptions} />
       </section>
 
       <section className={styles.sectionHeading}>
@@ -850,53 +847,36 @@ function InstallCard({
   );
 }
 
-function PushCard({
-  enabled,
-  activeSubscriptions,
-}: {
-  enabled: boolean;
-  activeSubscriptions: number;
-}) {
+function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
   const [state, setState] = useState<
     "idle" | "loading" | "active" | "denied" | "disabled" | "error"
   >(() => (activeSubscriptions > 0 ? "active" : "idle"));
 
-  const registerSubscription = useCallback(
-    async (createIfMissing: boolean) => {
-      if (
-        !enabled ||
-        !("serviceWorker" in navigator) ||
-        !("PushManager" in window)
-      ) {
-        return false;
-      }
-      const registration = await navigator.serviceWorker.ready;
-      let subscription = await registration.pushManager.getSubscription();
-      if (!subscription && createIfMissing) {
-        const config = await api.getPushConfig();
-        if (!config.enabled || !config.vapidPublicKey) return false;
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: decodeVapidKey(config.vapidPublicKey),
-        });
-      }
-      if (!subscription) return false;
-      await api.registerPushSubscription(subscription.toJSON());
-      return true;
-    },
-    [enabled],
-  );
+  const registerSubscription = useCallback(async (createIfMissing: boolean) => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      return false;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription && createIfMissing) {
+      const config = await api.getPushConfig();
+      if (!config.enabled || !config.vapidPublicKey) return false;
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: decodeVapidKey(config.vapidPublicKey),
+      });
+    }
+    if (!subscription) return false;
+    await api.registerPushSubscription(subscription.toJSON());
+    return true;
+  }, []);
 
   useEffect(() => {
     if (activeSubscriptions > 0) {
       setState("active");
       return;
     }
-    if (
-      !enabled ||
-      !("Notification" in window) ||
-      Notification.permission !== "granted"
-    ) {
+    if (!("Notification" in window) || Notification.permission !== "granted") {
       return;
     }
     let active = true;
@@ -910,13 +890,9 @@ function PushCard({
     return () => {
       active = false;
     };
-  }, [activeSubscriptions, enabled, registerSubscription]);
+  }, [activeSubscriptions, registerSubscription]);
 
   const requestPush = async () => {
-    if (!enabled) {
-      setState("disabled");
-      return;
-    }
     if (
       !("serviceWorker" in navigator) ||
       !("PushManager" in window) ||
