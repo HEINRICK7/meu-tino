@@ -1100,6 +1100,164 @@ h3 {
   line-height: 1.4;
 }
 
+.pixCard {
+  margin-top: 12px;
+  padding: 18px;
+  border: 1px solid #bfe8cd;
+  border-radius: 22px;
+  background: linear-gradient(145deg, #ffffff, #f0fbf3);
+  box-shadow: 0 10px 28px rgb(0 76 53 / 7%);
+}
+
+.pixCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.pixCardHeader .eyebrow {
+  margin-bottom: 4px;
+}
+
+.pixCardHeader h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.pixLogo {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
+  background: var(--color-primary-soft);
+}
+
+.pixLogo .logoMark {
+  width: 39px;
+  height: auto;
+}
+
+.pixContent {
+  display: grid;
+  gap: 20px;
+}
+
+.pixQr {
+  display: grid;
+  place-items: center;
+  width: fit-content;
+  margin: 0 auto;
+  padding: 8px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgb(0 76 53 / 9%);
+}
+
+.pixDetails {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pixInstruction,
+.pixEmpty p {
+  margin: 0 0 6px;
+  color: var(--color-ink-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pixLabel {
+  color: var(--color-primary);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pixKey,
+.pixPayload {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 11px 12px;
+  border: 1px solid #d5eadd;
+  border-radius: 12px;
+  color: var(--color-ink);
+  background: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  user-select: all;
+}
+
+.pixPayload {
+  max-height: 82px;
+  overflow: auto;
+  color: var(--color-primary-strong);
+}
+
+.pixDetails .primaryButton {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.pixCopyError {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.pixEmpty {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px;
+  border: 1px dashed #bfe8cd;
+  border-radius: 16px;
+  background: rgb(255 255 255 / 70%);
+}
+
+.pixEmpty h3 {
+  margin: 0 0 6px;
+  color: var(--color-ink);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.pixEmptyIcon {
+  flex: 0 0 25px;
+  width: 25px;
+  height: 25px;
+  margin-top: 2px;
+  color: var(--color-primary);
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+@media (min-width: 681px) {
+  .pixCard {
+    padding: 24px;
+  }
+
+  .pixContent {
+    grid-template-columns: 210px minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .pixQr {
+    margin: 0;
+  }
+}
+
 .liveNotification {
   position: fixed;
   z-index: 20;

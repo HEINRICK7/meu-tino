@@ -19,13 +19,24 @@ describe("customer channel API client", () => {
           },
           features: { push: false, pix: false, agreements: false },
           push: { activeSubscriptions: 0 },
+          pix: {
+            enabled: true,
+            key: "loja@example.com",
+            copyPaste: "000201PIX",
+          },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await api.getMe();
+    await expect(api.getMe()).resolves.toMatchObject({
+      pix: {
+        enabled: true,
+        key: "loja@example.com",
+        copyPaste: "000201PIX",
+      },
+    });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/me",

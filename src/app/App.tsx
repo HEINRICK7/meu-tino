@@ -18,6 +18,7 @@ import {
   useOutletContext,
   useParams,
 } from "react-router-dom";
+import { QRCodeSVG } from "qrcode.react";
 import { api, ApiError, createIdempotencyKey } from "../shared/api/client";
 import type { ActivityItem, MeResponse } from "../shared/api/types";
 import { formatDate, formatMinorAmount } from "../shared/formatting/money";
@@ -423,6 +424,8 @@ function HomePage() {
         <PushCard activeSubscriptions={me.push.activeSubscriptions} />
       </section>
 
+      <PixCard pix={me.pix} />
+
       <section className={styles.sectionHeading}>
         <div>
           <p className={styles.eyebrow}>Movimentações recentes</p>
@@ -443,6 +446,105 @@ function HomePage() {
       )}
     </>
   );
+}
+
+function PixCard({ pix }: { pix: MeResponse["pix"] }) {
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
+  const configuration = pix?.enabled && pix.key && pix.copyPaste ? pix : null;
+
+  const copyPaste = async () => {
+    if (!configuration?.copyPaste) return;
+    setCopied(false);
+    setCopyError(false);
+    try {
+      await copyText(configuration.copyPaste);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2400);
+    } catch {
+      setCopyError(true);
+    }
+  };
+
+  return (
+    <section className={styles.pixCard} aria-labelledby="pix-title">
+      <div className={styles.pixCardHeader}>
+        <div className={styles.pixLogo} aria-hidden="true">
+          <LogoMark />
+        </div>
+        <div>
+          <p className={styles.eyebrow}>Pagamento simples</p>
+          <h2 id="pix-title">Pague via Pix</h2>
+        </div>
+      </div>
+
+      {!configuration ? (
+        <div className={styles.pixEmpty}>
+          <QrCodeIcon />
+          <div>
+            <h3>Pix ainda não configurado</h3>
+            <p>
+              Quando o comércio ativar o Pix, o QR Code e o código para copiar
+              aparecerão aqui.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className={styles.pixContent}>
+          <div className={styles.pixQr} aria-label="QR Code Pix">
+            <QRCodeSVG
+              value={configuration.copyPaste ?? ""}
+              size={176}
+              level="M"
+              includeMargin
+              bgColor="#ffffff"
+              fgColor="#004c35"
+            />
+          </div>
+          <div className={styles.pixDetails}>
+            <p className={styles.pixInstruction}>
+              Aponte a câmera do seu banco para pagar. Você também pode copiar o
+              código abaixo.
+            </p>
+            <span className={styles.pixLabel}>Chave Pix</span>
+            <code className={styles.pixKey}>{configuration.key}</code>
+            <span className={styles.pixLabel}>Código copia e cola</span>
+            <code className={styles.pixPayload}>{configuration.copyPaste}</code>
+            <button
+              className={styles.primaryButton}
+              type="button"
+              onClick={() => void copyPaste()}
+            >
+              {copied ? "Código copiado" : "Copiar código Pix"}
+            </button>
+            {copyError && (
+              <p className={styles.pixCopyError} role="alert">
+                Não foi possível copiar agora. Toque e segure o código para
+                copiar manualmente.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "true");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("clipboard unavailable");
 }
 
 function ActivityPage() {
@@ -1539,4 +1641,13 @@ function ShieldIcon() {
 }
 function WarningIcon() {
   return <TinoIcon name="info" />;
+}
+
+function QrCodeIcon() {
+  return (
+    <svg className={styles.pixEmptyIcon} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z" />
+      <path d="M14 14h2v2h-2zM18 14h2v2h-2zM14 18h2v2h-2zM18 18h2v2h-2z" />
+    </svg>
+  );
 }

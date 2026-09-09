@@ -16,6 +16,12 @@ export type MeResponse = {
   };
   features: { push: boolean; pix: boolean; agreements: boolean };
   push: { activeSubscriptions: number };
+  /** Optional for compatibility with older backend releases. */
+  pix?: {
+    enabled: boolean;
+    key: string | null;
+    copyPaste: string | null;
+  } | null;
 };
 
 export type ActivityItem = {
