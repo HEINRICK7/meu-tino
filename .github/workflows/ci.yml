@@ -46,3 +46,4 @@ jobs:
     uses: HEINRICK7/backend-tino/.github/workflows/deploy-pwa-vps.yml@main
     with:
       pwa_ref: ${{ github.sha }}
+    secrets: inherit
