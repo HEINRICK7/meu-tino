@@ -848,19 +848,41 @@ function InstallCard({
 }
 
 function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
+  type PushSetupErrorCode = "unsupported" | "disabled";
+  class PushSetupError extends Error {
+    constructor(
+      public readonly code: PushSetupErrorCode,
+      message: string,
+    ) {
+      super(message);
+      this.name = "PushSetupError";
+    }
+  }
+
   const [state, setState] = useState<
     "idle" | "loading" | "active" | "denied" | "disabled" | "error"
   >(() => (activeSubscriptions > 0 ? "active" : "idle"));
 
   const registerSubscription = useCallback(async (createIfMissing: boolean) => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-      return false;
+      throw new PushSetupError(
+        "unsupported",
+        "Este navegador não oferece suporte a notificações push.",
+      );
     }
-    const registration = await navigator.serviceWorker.ready;
+    const registration = await navigator.serviceWorker.register("/sw.js", {
+      updateViaCache: "none",
+    });
+    await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
     if (!subscription && createIfMissing) {
       const config = await api.getPushConfig();
-      if (!config.enabled || !config.vapidPublicKey) return false;
+      if (!config.enabled || !config.vapidPublicKey) {
+        throw new PushSetupError(
+          "disabled",
+          "O servidor ainda não habilitou as notificações deste espaço.",
+        );
+      }
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeVapidKey(config.vapidPublicKey),
@@ -911,12 +933,14 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
         setState("denied");
         return;
       }
-      if (!(await registerSubscription(true))) {
+      await registerSubscription(true);
+      setState("active");
+    } catch (error) {
+      if (error instanceof PushSetupError && error.code === "disabled") {
         setState("disabled");
         return;
       }
-      setState("active");
-    } catch {
+      console.warn("Meu TINO: falha ao ativar notificações push", error);
       setState("error");
     }
   };
@@ -943,8 +967,8 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
       "Em breve",
     ],
     error: [
-      "Não foi possível ativar",
-      "Sua caderneta continua disponível por aqui.",
+      "Ativação não concluída",
+      "A permissão foi liberada, mas este aparelho não foi registrado. Tente novamente.",
       "Tentar novamente",
     ],
   }[state];

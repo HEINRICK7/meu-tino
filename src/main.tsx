@@ -7,7 +7,14 @@ import "./styles/global.css";
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
   window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/sw.js");
+    void navigator.serviceWorker
+      .register("/sw.js", { updateViaCache: "none" })
+      .catch((error: unknown) => {
+        console.warn(
+          "Meu TINO: não foi possível registrar o Service Worker",
+          error,
+        );
+      });
   });
 }
 
