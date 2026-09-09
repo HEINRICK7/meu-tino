@@ -26,12 +26,28 @@ import styles from "./App.module.css";
 type SessionStatus =
   "loading" | "authenticated" | "anonymous" | "forbidden" | "unavailable";
 
+type SessionRefreshOptions = { silent?: boolean };
+
+type LiveNotification = {
+  kind: "payment" | "activity" | "balance";
+  title: string;
+  message: string;
+  activityId?: string;
+};
+
+type LiveSnapshot = {
+  accountVersion: number;
+  activityId: string | null;
+};
+
 type SessionContextValue = {
   me: MeResponse | null;
   status: SessionStatus;
   error: ApiError | null;
-  refresh: () => Promise<void>;
+  refresh: (options?: SessionRefreshOptions) => Promise<void>;
   logout: () => Promise<void>;
+  liveNotification: LiveNotification | null;
+  dismissLiveNotification: () => void;
 };
 
 const SessionContext = ({
@@ -66,23 +82,80 @@ export default function App() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [status, setStatus] = useState<SessionStatus>("loading");
   const [error, setError] = useState<ApiError | null>(null);
+  const [liveNotification, setLiveNotification] =
+    useState<LiveNotification | null>(null);
+  const liveSnapshot = useRef<LiveSnapshot | null>(null);
+  const livePollInFlight = useRef(false);
 
-  const refresh = useCallback(async () => {
-    setStatus("loading");
-    setError(null);
-    try {
-      setMe(await api.getMe());
-      setStatus("authenticated");
-    } catch (error) {
-      setMe(null);
-      setError(error instanceof ApiError ? error : null);
-      if (error instanceof ApiError && error.status === 401) {
-        setStatus("anonymous");
-      } else if (error instanceof ApiError && error.status === 403) {
-        setStatus("forbidden");
-      } else {
-        setStatus("unavailable");
+  const refresh = useCallback(
+    async ({ silent = false }: SessionRefreshOptions = {}) => {
+      if (!silent) {
+        setStatus("loading");
+        setError(null);
       }
+      try {
+        setMe(await api.getMe());
+        setStatus("authenticated");
+        setError(null);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          setMe(null);
+          setError(error);
+          setStatus("anonymous");
+        } else if (error instanceof ApiError && error.status === 403) {
+          if (!silent) {
+            setMe(null);
+            setError(error);
+            setStatus("forbidden");
+          }
+        } else if (!silent) {
+          setMe(null);
+          setError(error instanceof ApiError ? error : null);
+          setStatus("unavailable");
+        }
+      }
+    },
+    [],
+  );
+
+  const pollLiveData = useCallback(async () => {
+    if (livePollInFlight.current) return;
+    livePollInFlight.current = true;
+    try {
+      const [nextMe, activityPage] = await Promise.all([
+        api.getMe(),
+        api.listActivity({ limit: 1 }),
+      ]);
+      const latestActivity = activityPage.items[0] ?? null;
+      const previous = liveSnapshot.current;
+      const accountChanged =
+        previous !== null && previous.accountVersion !== nextMe.account.version;
+      const activityChanged =
+        previous !== null &&
+        previous.activityId !== null &&
+        latestActivity !== null &&
+        latestActivity.id !== previous.activityId;
+
+      setMe(nextMe);
+      setStatus("authenticated");
+      setError(null);
+      liveSnapshot.current = {
+        accountVersion: nextMe.account.version,
+        activityId: latestActivity?.id ?? null,
+      };
+
+      if (accountChanged || activityChanged) {
+        setLiveNotification(notificationForActivity(latestActivity, nextMe));
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setMe(null);
+        setError(error);
+        setStatus("anonymous");
+      }
+      // A transient polling failure must leave the last known financial view visible.
+    } finally {
+      livePollInFlight.current = false;
     }
   }, []);
 
@@ -95,6 +168,8 @@ export default function App() {
       setMe(null);
       setError(null);
       setStatus("anonymous");
+      setLiveNotification(null);
+      liveSnapshot.current = null;
     }
   }, []);
 
@@ -102,7 +177,8 @@ export default function App() {
     void refresh();
 
     const refreshWhenVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible")
+        void refresh({ silent: true });
     };
     window.addEventListener("focus", refreshWhenVisible);
     document.addEventListener("visibilitychange", refreshWhenVisible);
@@ -112,9 +188,28 @@ export default function App() {
     };
   }, [refresh]);
 
+  useEffect(() => {
+    if (status !== "authenticated") {
+      liveSnapshot.current = null;
+      return;
+    }
+
+    void pollLiveData();
+    const interval = window.setInterval(() => void pollLiveData(), 15000);
+    return () => window.clearInterval(interval);
+  }, [pollLiveData, status]);
+
   const session = useMemo(
-    () => ({ me, status, error, refresh, logout }),
-    [error, logout, me, refresh, status],
+    () => ({
+      me,
+      status,
+      error,
+      refresh,
+      logout,
+      liveNotification,
+      dismissLiveNotification: () => setLiveNotification(null),
+    }),
+    [error, liveNotification, logout, me, refresh, status],
   );
 
   return (
@@ -155,7 +250,8 @@ function SessionBoundary() {
 }
 
 function AppShell() {
-  const { me, logout } = useSession();
+  const { me, logout, liveNotification, dismissLiveNotification } =
+    useSession();
   const location = useLocation();
   const [installEvent, setInstallEvent] =
     useState<BeforeInstallPromptEvent | null>(null);
@@ -198,6 +294,13 @@ function AppShell() {
       <main className={styles.main}>
         <Outlet context={{ installEvent, setInstallEvent }} />
       </main>
+
+      {liveNotification && (
+        <LiveNotificationNotice
+          notification={liveNotification}
+          onDismiss={dismissLiveNotification}
+        />
+      )}
 
       <nav className={styles.bottomNav} aria-label="Navegação principal">
         <Link
@@ -254,7 +357,7 @@ function HomePage() {
     return () => {
       active = false;
     };
-  }, [activityReload]);
+  }, [activityReload, me?.account.version]);
 
   const retryActivity = () => {
     if (isUnauthenticatedError(activityError)) {
@@ -334,7 +437,7 @@ function HomePage() {
 }
 
 function ActivityPage() {
-  const { refresh } = useSession();
+  const { me, refresh } = useSession();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -383,7 +486,7 @@ function ActivityPage() {
 
   useEffect(() => {
     void loadPage(null, false);
-  }, [loadPage, reloadKey]);
+  }, [loadPage, me?.account.version, reloadKey]);
 
   const retryActivity = () => {
     if (isUnauthenticatedError(requestError)) {
@@ -1014,6 +1117,54 @@ function ActivityErrorNotice({
   );
 }
 
+function LiveNotificationNotice({
+  notification,
+  onDismiss,
+}: {
+  notification: LiveNotification;
+  onDismiss: () => void;
+}) {
+  const target = notification.activityId
+    ? `/activity/${notification.activityId}`
+    : "/";
+  return (
+    <aside className={styles.liveNotification} role="status" aria-live="polite">
+      <div className={styles.liveNotificationTopline}>
+        <img
+          className={styles.liveNotificationLogo}
+          src="/tino/brand/tino-mark.png"
+          alt=""
+          width="36"
+          height="36"
+        />
+        <span className={styles.liveNotificationBrand}>Meu TINO</span>
+        <button
+          className={styles.liveNotificationClose}
+          type="button"
+          aria-label="Fechar notificação"
+          onClick={onDismiss}
+        >
+          ×
+        </button>
+      </div>
+      <div className={styles.liveNotificationBody}>
+        <span
+          className={`${styles.liveNotificationIcon} ${styles[`liveNotificationIcon${capitalize(notification.kind)}`]}`}
+        >
+          <BellIcon />
+        </span>
+        <div className={styles.liveNotificationCopy}>
+          <strong>{notification.title}</strong>
+          <span>{notification.message}</span>
+          <Link to={target} onClick={onDismiss}>
+            Ver no extrato <ArrowIcon />
+          </Link>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 function describeActivityError(
   error: unknown,
   detail: boolean,
@@ -1063,6 +1214,34 @@ function describeActivityError(
     retryable: true,
     correlationId,
   };
+}
+
+function notificationForActivity(
+  activity: ActivityItem | null,
+  me: MeResponse,
+): LiveNotification {
+  if (!activity) {
+    return {
+      kind: "balance",
+      title: "Caderneta atualizada",
+      message: `Seu saldo agora é ${formatMinorAmount(me.account.balance.minor, me.account.balance.currency)}.`,
+    };
+  }
+  const isPayment =
+    activity.type === "PAYMENT_CONFIRMED" ||
+    activity.impact === "DECREASES_BALANCE";
+  return {
+    kind: isPayment ? "payment" : "activity",
+    title: isPayment ? "Pagamento recebido" : "Nova movimentação",
+    message: isPayment
+      ? `Seu saldo agora é ${formatMinorAmount(me.account.balance.minor, me.account.balance.currency)}.`
+      : `${activity.label} • ${formatMinorAmount(activity.amount.minor, activity.amount.currency)}.`,
+    activityId: activity.id,
+  };
+}
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function InlineError({
