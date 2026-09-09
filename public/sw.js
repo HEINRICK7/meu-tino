@@ -1,4 +1,4 @@
-const CACHE_NAME = "meu-tino-shell-v2";
+const CACHE_NAME = "meu-tino-shell-v3";
 const SHELL = [
   "/",
   "/index.html",
@@ -63,6 +63,8 @@ self.addEventListener("push", (event) => {
       badge: "/tino/pwa/notification-badge.png",
       tag: payload.tag || "tino-update",
       renotify: true,
+      requireInteraction: true,
+      vibrate: [250, 100, 250, 100, 400],
       timestamp: Date.now(),
       actions: [{ action: "open", title: "Ver extrato" }],
       data: { target: payload.target || "/activity" },
