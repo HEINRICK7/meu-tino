@@ -1110,7 +1110,8 @@ function describeActivationError(error: unknown): UserFacingIssue {
   if (error.status === 410) {
     return {
       kind: "expired",
-      message: "Este convite expirou. Peça um novo link ao comerciante.",
+      message:
+        "Este link já foi usado ou expirou. Peça ao comerciante um link de recuperação para entrar novamente.",
       retryable: false,
       correlationId,
     };
