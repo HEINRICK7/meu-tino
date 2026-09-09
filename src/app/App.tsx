@@ -411,7 +411,10 @@ function HomePage() {
           installEvent={installEvent}
           onInstalled={() => setInstallEvent(null)}
         />
-        <PushCard enabled={me.features.push} />
+        <PushCard
+          enabled={me.features.push}
+          activeSubscriptions={me.push.activeSubscriptions}
+        />
       </section>
 
       <section className={styles.sectionHeading}>
@@ -838,10 +841,16 @@ function InstallCard({
   );
 }
 
-function PushCard({ enabled }: { enabled: boolean }) {
+function PushCard({
+  enabled,
+  activeSubscriptions,
+}: {
+  enabled: boolean;
+  activeSubscriptions: number;
+}) {
   const [state, setState] = useState<
     "idle" | "loading" | "active" | "denied" | "disabled" | "error"
-  >("idle");
+  >(() => (activeSubscriptions > 0 ? "active" : "idle"));
   const requestPush = async () => {
     if (!enabled) {
       setState("disabled");
@@ -862,16 +871,21 @@ function PushCard({ enabled }: { enabled: boolean }) {
         setState("disabled");
         return;
       }
-      const permission = await Notification.requestPermission();
+      const permission =
+        Notification.permission === "granted"
+          ? "granted"
+          : await Notification.requestPermission();
       if (permission !== "granted") {
         setState("denied");
         return;
       }
       const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeVapidKey(config.vapidPublicKey),
-      });
+      const subscription =
+        (await registration.pushManager.getSubscription()) ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeVapidKey(config.vapidPublicKey),
+        }));
       await api.registerPushSubscription(subscription.toJSON());
       setState("active");
     } catch {

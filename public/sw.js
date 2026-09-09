@@ -4,6 +4,8 @@ const SHELL = [
   "/index.html",
   "/manifest.webmanifest",
   "/icons/tino-mark.svg",
+  "/tino/pwa/notification-icon.png",
+  "/tino/pwa/notification-badge.png",
 ];
 
 self.addEventListener("install", (event) => {
@@ -57,15 +59,20 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(payload.title, {
       body: payload.body,
-      icon: "/icons/tino-mark.svg",
-      badge: "/icons/tino-mark.svg",
-      data: { target: payload.target },
+      icon: "/tino/pwa/notification-icon.png",
+      badge: "/tino/pwa/notification-badge.png",
+      tag: payload.tag || "tino-update",
+      renotify: true,
+      timestamp: Date.now(),
+      actions: [{ action: "open", title: "Ver extrato" }],
+      data: { target: payload.target || "/activity" },
     }),
   );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  if (event.action === "close") return;
   const target = event.notification.data?.target || "/activity";
   event.waitUntil(
     self.clients

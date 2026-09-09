@@ -88,6 +88,11 @@ export const api = {
         keys: subscription.keys,
       }),
     }),
+  removePushSubscription: (endpoint: string) =>
+    request<void>("/v1/me/push-subscriptions", {
+      method: "DELETE",
+      body: JSON.stringify({ endpoint }),
+    }),
 };
 
 export function getApiBaseUrl() {
