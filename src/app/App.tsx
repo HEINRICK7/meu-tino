@@ -847,21 +847,44 @@ function InstallCard({
   );
 }
 
-function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
-  type PushSetupErrorCode = "unsupported" | "disabled";
-  class PushSetupError extends Error {
-    constructor(
-      public readonly code: PushSetupErrorCode,
-      message: string,
-    ) {
-      super(message);
-      this.name = "PushSetupError";
+type PushSetupErrorCode = "unsupported" | "disabled";
+
+class PushSetupError extends Error {
+  constructor(
+    public readonly code: PushSetupErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PushSetupError";
+  }
+}
+
+async function createPushSubscription(
+  registration: ServiceWorkerRegistration,
+  applicationServerKey: ArrayBuffer,
+) {
+  const options = { userVisibleOnly: true, applicationServerKey };
+  try {
+    return await registration.pushManager.subscribe(options);
+  } catch (firstError) {
+    // Android Chrome can still be replacing the worker immediately after the
+    // permission prompt. Refresh the registration and retry once before
+    // reporting a real activation failure to the customer.
+    await registration.update().catch(() => undefined);
+    const readyRegistration = await navigator.serviceWorker.ready;
+    try {
+      return await readyRegistration.pushManager.subscribe(options);
+    } catch {
+      throw firstError;
     }
   }
+}
 
+function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
   const [state, setState] = useState<
     "idle" | "loading" | "active" | "denied" | "disabled" | "error"
   >(() => (activeSubscriptions > 0 ? "active" : "idle"));
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
 
   const registerSubscription = useCallback(async (createIfMissing: boolean) => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
@@ -883,12 +906,20 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
           "O servidor ainda não habilitou as notificações deste espaço.",
         );
       }
-      subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeVapidKey(config.vapidPublicKey),
-      });
+      subscription = await createPushSubscription(
+        registration,
+        decodeVapidKey(config.vapidPublicKey),
+      );
     }
-    if (!subscription) return false;
+    if (!subscription) {
+      if (createIfMissing) {
+        throw new PushSetupError(
+          "unsupported",
+          "O Chrome não devolveu uma assinatura para este aparelho.",
+        );
+      }
+      return false;
+    }
     await api.registerPushSubscription(subscription.toJSON());
     return true;
   }, []);
@@ -920,10 +951,14 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
       !("PushManager" in window) ||
       !("Notification" in window)
     ) {
+      setErrorDetail(
+        "Este navegador não oferece suporte às notificações do Meu TINO.",
+      );
       setState("error");
       return;
     }
     setState("loading");
+    setErrorDetail(null);
     try {
       const permission =
         Notification.permission === "granted"
@@ -941,6 +976,7 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
         return;
       }
       console.warn("Meu TINO: falha ao ativar notificações push", error);
+      setErrorDetail(describePushError(error));
       setState("error");
     }
   };
@@ -972,12 +1008,14 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
       "Tentar novamente",
     ],
   }[state];
+  const resolvedCopy =
+    state === "error" && errorDetail ? [copy[0], errorDetail, copy[2]] : copy;
   return (
     <article className={styles.utilityCard}>
       <TinoBadge name="notificacoes" className={styles.utilityBadge} />
       <div>
-        <p className={styles.cardKicker}>{copy[0]}</p>
-        <h3>{copy[1]}</h3>
+        <p className={styles.cardKicker}>{resolvedCopy[0]}</p>
+        <h3>{resolvedCopy[1]}</h3>
         <button
           className={styles.smallButton}
           type="button"
@@ -989,7 +1027,7 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
             state === "disabled"
           }
         >
-          {copy[2]}
+          {resolvedCopy[2]}
         </button>
       </div>
     </article>
@@ -1358,7 +1396,21 @@ function decodeVapidKey(value: string) {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
   const raw = window.atob(base64);
-  return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
+  const bytes = Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
+  return bytes.buffer as ArrayBuffer;
+}
+
+function describePushError(error: unknown) {
+  if (error instanceof ApiError) {
+    return `O servidor recusou o registro (${error.status}/${error.code}).`;
+  }
+  if (error instanceof Error) {
+    const detail = error.message.trim().replace(/\s+/g, " ");
+    return detail
+      ? `O Chrome não conseguiu registrar o aparelho (${error.name}: ${detail.slice(0, 120)}).`
+      : `O Chrome não conseguiu registrar o aparelho (${error.name}).`;
+  }
+  return "O navegador não conseguiu registrar este aparelho. Tente novamente.";
 }
 function Spinner() {
   return <span className={styles.spinner} aria-label="Carregando" />;
