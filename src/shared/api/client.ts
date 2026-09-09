@@ -78,7 +78,8 @@ export const api = {
   getActivity: (activityId: string) =>
     request<ActivityItem>(`/v1/me/activity/${encodeURIComponent(activityId)}`),
   logout: () => request<void>("/v1/me/logout", { method: "POST" }),
-  getPushConfig: () => request<PushConfig>("/v1/me/push-config"),
+  getPushConfig: () =>
+    request<PushConfig>("/v1/me/push-config", { cache: "no-store" }),
   registerPushSubscription: (subscription: PushSubscriptionJSON) =>
     request<{ id: string; status: string }>("/v1/me/push-subscriptions", {
       method: "POST",

@@ -998,9 +998,9 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
       "Entendi",
     ],
     disabled: [
-      "Avisos em preparação",
-      "Este recurso ainda não está disponível para este espaço.",
-      "Em breve",
+      "Notificações temporariamente indisponíveis",
+      "O servidor ainda não confirmou a ativação. Atualize e tente novamente.",
+      "Tentar novamente",
     ],
     error: [
       "Ativação não concluída",
@@ -1021,10 +1021,7 @@ function PushCard({ activeSubscriptions }: { activeSubscriptions: number }) {
           type="button"
           onClick={() => void requestPush()}
           disabled={
-            state === "loading" ||
-            state === "active" ||
-            state === "denied" ||
-            state === "disabled"
+            state === "loading" || state === "active" || state === "denied"
           }
         >
           {resolvedCopy[2]}
