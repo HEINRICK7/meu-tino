@@ -40,6 +40,8 @@ type LiveSnapshot = {
   activityId: string | null;
 };
 
+const LIVE_POLL_INTERVAL_MS = 5000;
+
 type SessionContextValue = {
   me: MeResponse | null;
   status: SessionStatus;
@@ -177,8 +179,12 @@ export default function App() {
     void refresh();
 
     const refreshWhenVisible = () => {
-      if (document.visibilityState === "visible")
-        void refresh({ silent: true });
+      if (document.visibilityState !== "visible") return;
+      if (liveSnapshot.current !== null) {
+        void pollLiveData();
+        return;
+      }
+      void refresh({ silent: true });
     };
     window.addEventListener("focus", refreshWhenVisible);
     document.addEventListener("visibilitychange", refreshWhenVisible);
@@ -186,7 +192,7 @@ export default function App() {
       window.removeEventListener("focus", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [refresh]);
+  }, [pollLiveData, refresh]);
 
   useEffect(() => {
     if (status !== "authenticated") {
@@ -195,7 +201,10 @@ export default function App() {
     }
 
     void pollLiveData();
-    const interval = window.setInterval(() => void pollLiveData(), 15000);
+    const interval = window.setInterval(
+      () => void pollLiveData(),
+      LIVE_POLL_INTERVAL_MS,
+    );
     return () => window.clearInterval(interval);
   }, [pollLiveData, status]);
 
@@ -851,6 +860,58 @@ function PushCard({
   const [state, setState] = useState<
     "idle" | "loading" | "active" | "denied" | "disabled" | "error"
   >(() => (activeSubscriptions > 0 ? "active" : "idle"));
+
+  const registerSubscription = useCallback(
+    async (createIfMissing: boolean) => {
+      if (
+        !enabled ||
+        !("serviceWorker" in navigator) ||
+        !("PushManager" in window)
+      ) {
+        return false;
+      }
+      const registration = await navigator.serviceWorker.ready;
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription && createIfMissing) {
+        const config = await api.getPushConfig();
+        if (!config.enabled || !config.vapidPublicKey) return false;
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeVapidKey(config.vapidPublicKey),
+        });
+      }
+      if (!subscription) return false;
+      await api.registerPushSubscription(subscription.toJSON());
+      return true;
+    },
+    [enabled],
+  );
+
+  useEffect(() => {
+    if (activeSubscriptions > 0) {
+      setState("active");
+      return;
+    }
+    if (
+      !enabled ||
+      !("Notification" in window) ||
+      Notification.permission !== "granted"
+    ) {
+      return;
+    }
+    let active = true;
+    void registerSubscription(false)
+      .then((registered) => {
+        if (active && registered) setState("active");
+      })
+      .catch(() => {
+        // Reconciliation is best effort; the explicit button remains available.
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeSubscriptions, enabled, registerSubscription]);
+
   const requestPush = async () => {
     if (!enabled) {
       setState("disabled");
@@ -866,11 +927,6 @@ function PushCard({
     }
     setState("loading");
     try {
-      const config = await api.getPushConfig();
-      if (!config.enabled || !config.vapidPublicKey) {
-        setState("disabled");
-        return;
-      }
       const permission =
         Notification.permission === "granted"
           ? "granted"
@@ -879,14 +935,10 @@ function PushCard({
         setState("denied");
         return;
       }
-      const registration = await navigator.serviceWorker.ready;
-      const subscription =
-        (await registration.pushManager.getSubscription()) ??
-        (await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: decodeVapidKey(config.vapidPublicKey),
-        }));
-      await api.registerPushSubscription(subscription.toJSON());
+      if (!(await registerSubscription(true))) {
+        setState("disabled");
+        return;
+      }
       setState("active");
     } catch {
       setState("error");
