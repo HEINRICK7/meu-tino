@@ -61,4 +61,24 @@ describe("customer channel API client", () => {
     expect(init.headers.get("Content-Type")).toBe("application/json");
     expect(init.headers.get("Idempotency-Key")).toEqual(expect.any(String));
   });
+
+  it("normalizes the backend snake_case VAPID key", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ enabled: true, vapid_public_key: "public-key" }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.getPushConfig()).resolves.toEqual({
+      enabled: true,
+      vapidPublicKey: "public-key",
+    });
+    expect(fetchMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
 });

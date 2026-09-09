@@ -11,6 +11,12 @@ const baseUrl = (import.meta.env.VITE_API_BASE_URL || "/api").replace(
   "",
 );
 
+type PushConfigPayload = {
+  enabled: boolean;
+  vapid_public_key?: string | null;
+  vapidPublicKey?: string | null;
+};
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -78,8 +84,16 @@ export const api = {
   getActivity: (activityId: string) =>
     request<ActivityItem>(`/v1/me/activity/${encodeURIComponent(activityId)}`),
   logout: () => request<void>("/v1/me/logout", { method: "POST" }),
-  getPushConfig: () =>
-    request<PushConfig>("/v1/me/push-config", { cache: "no-store" }),
+  getPushConfig: async (): Promise<PushConfig> => {
+    const payload = await request<PushConfigPayload>("/v1/me/push-config", {
+      cache: "no-store",
+    });
+    return {
+      enabled: payload.enabled,
+      vapidPublicKey:
+        payload.vapidPublicKey ?? payload.vapid_public_key ?? null,
+    };
+  },
   registerPushSubscription: (subscription: PushSubscriptionJSON) =>
     request<{ id: string; status: string }>("/v1/me/push-subscriptions", {
       method: "POST",
