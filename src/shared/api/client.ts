@@ -67,7 +67,10 @@ export function createIdempotencyKey() {
 type ActivationOptions = { idempotencyKey?: string };
 
 export const api = {
-  getMe: () => request<MeResponse>("/v1/me"),
+  getMe: () =>
+    request<MeResponse>("/v1/me", {
+      cache: "no-store",
+    }),
   activate: (token: string, options: ActivationOptions = {}) =>
     request<{ status: string }>("/v1/customer-channel/activation", {
       method: "POST",
@@ -79,10 +82,14 @@ export const api = {
   listActivity: (options: { limit?: number; cursor?: string } = {}) => {
     const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
     if (options.cursor) params.set("cursor", options.cursor);
-    return request<ActivityPage>(`/v1/me/activity?${params.toString()}`);
+    return request<ActivityPage>(`/v1/me/activity?${params.toString()}`, {
+      cache: "no-store",
+    });
   },
   getActivity: (activityId: string) =>
-    request<ActivityItem>(`/v1/me/activity/${encodeURIComponent(activityId)}`),
+    request<ActivityItem>(`/v1/me/activity/${encodeURIComponent(activityId)}`, {
+      cache: "no-store",
+    }),
   logout: () => request<void>("/v1/me/logout", { method: "POST" }),
   getPushConfig: async (): Promise<PushConfig> => {
     const payload = await request<PushConfigPayload>("/v1/me/push-config", {

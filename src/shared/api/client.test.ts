@@ -45,6 +45,42 @@ describe("customer channel API client", () => {
     expect(fetchMock.mock.calls[0][1].headers.get("Accept")).toBe(
       "application/json",
     );
+    expect(fetchMock.mock.calls[0][1].cache).toBe("no-store");
+  });
+
+  it("bypasses HTTP caches for authoritative activity reads", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ items: [], nextCursor: null, asOf: "2026-09-08" }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "activity-id",
+            type: "PAYMENT_CONFIRMED",
+            impact: "DECREASES_BALANCE",
+            amount: { minor: 1250, currency: "BRL" },
+            label: "Pagamento",
+            occurredAt: "2026-09-08T12:00:00Z",
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.listActivity({ limit: 1 });
+    await api.getActivity("activity-id");
+
+    expect(fetchMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({ cache: "no-store", credentials: "include" }),
+    );
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({ cache: "no-store", credentials: "include" }),
+    );
   });
 
   it("activates an invite through the public contract with idempotency", async () => {

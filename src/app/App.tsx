@@ -49,6 +49,7 @@ type SessionContextValue = {
   error: ApiError | null;
   refresh: (options?: SessionRefreshOptions) => Promise<void>;
   logout: () => Promise<void>;
+  liveDataRevision: number;
   liveNotification: LiveNotification | null;
   dismissLiveNotification: () => void;
 };
@@ -87,6 +88,7 @@ export default function App() {
   const [error, setError] = useState<ApiError | null>(null);
   const [liveNotification, setLiveNotification] =
     useState<LiveNotification | null>(null);
+  const [liveDataRevision, setLiveDataRevision] = useState(0);
   const liveSnapshot = useRef<LiveSnapshot | null>(null);
   const livePollInFlight = useRef(false);
 
@@ -135,9 +137,7 @@ export default function App() {
         previous !== null && previous.accountVersion !== nextMe.account.version;
       const activityChanged =
         previous !== null &&
-        previous.activityId !== null &&
-        latestActivity !== null &&
-        latestActivity.id !== previous.activityId;
+        previous.activityId !== (latestActivity?.id ?? null);
 
       setMe(nextMe);
       setStatus("authenticated");
@@ -147,6 +147,9 @@ export default function App() {
         activityId: latestActivity?.id ?? null,
       };
 
+      if (previous === null || accountChanged || activityChanged) {
+        setLiveDataRevision((revision) => revision + 1);
+      }
       if (accountChanged || activityChanged) {
         setLiveNotification(notificationForActivity(latestActivity, nextMe));
       }
@@ -171,6 +174,7 @@ export default function App() {
       setMe(null);
       setError(null);
       setStatus("anonymous");
+      setLiveDataRevision(0);
       setLiveNotification(null);
       liveSnapshot.current = null;
     }
@@ -216,10 +220,11 @@ export default function App() {
       error,
       refresh,
       logout,
+      liveDataRevision,
       liveNotification,
       dismissLiveNotification: () => setLiveNotification(null),
     }),
-    [error, liveNotification, logout, me, refresh, status],
+    [error, liveDataRevision, liveNotification, logout, me, refresh, status],
   );
 
   return (
@@ -339,7 +344,7 @@ function AppShell() {
 }
 
 function HomePage() {
-  const { me, refresh } = useSession();
+  const { me, refresh, liveDataRevision } = useSession();
   const { installEvent, setInstallEvent } = useAppShellContext();
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [activityState, setActivityState] = useState<
@@ -367,7 +372,7 @@ function HomePage() {
     return () => {
       active = false;
     };
-  }, [activityReload, me?.account.version]);
+  }, [activityReload, liveDataRevision, me?.account.version]);
 
   const retryActivity = () => {
     if (isUnauthenticatedError(activityError)) {
@@ -436,14 +441,14 @@ function HomePage() {
         </Link>
       </section>
 
-      {activityState === "loading" && <ActivitySkeleton />}
+      {activityState === "loading" && activity.length === 0 && (
+        <ActivitySkeleton />
+      )}
       {activityState === "error" && activityError && (
         <ActivityErrorNotice error={activityError} onRetry={retryActivity} />
       )}
       {activityState === "ready" && activity.length === 0 && <EmptyActivity />}
-      {activityState === "ready" && activity.length > 0 && (
-        <ActivityList items={activity} compact />
-      )}
+      {activity.length > 0 && <ActivityList items={activity} compact />}
     </>
   );
 }
@@ -560,7 +565,7 @@ async function copyText(value: string) {
 }
 
 function ActivityPage() {
-  const { me, refresh } = useSession();
+  const { me, refresh, liveDataRevision } = useSession();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -576,8 +581,6 @@ function ActivityPage() {
         setLoadMoreError(null);
       } else {
         setState("loading");
-        setItems([]);
-        setNextCursor(null);
         setRequestError(null);
         setLoadMoreError(null);
       }
@@ -609,7 +612,7 @@ function ActivityPage() {
 
   useEffect(() => {
     void loadPage(null, false);
-  }, [loadPage, me?.account.version, reloadKey]);
+  }, [loadPage, liveDataRevision, me?.account.version, reloadKey]);
 
   const retryActivity = () => {
     if (isUnauthenticatedError(requestError)) {
@@ -640,12 +643,14 @@ function ActivityPage() {
         <h1>Seu extrato</h1>
         <p>Uma visão simples de cada compra e pagamento confirmado.</p>
       </section>
-      {state === "loading" && <ActivitySkeleton rows={5} />}
+      {state === "loading" && items.length === 0 && (
+        <ActivitySkeleton rows={5} />
+      )}
       {state === "error" && requestError && (
         <ActivityErrorNotice error={requestError} onRetry={retryActivity} />
       )}
       {state === "ready" && items.length === 0 && <EmptyActivity />}
-      {state === "ready" && items.length > 0 && <ActivityList items={items} />}
+      {items.length > 0 && <ActivityList items={items} />}
       {state === "ready" && items.length > 0 && nextCursor && (
         <div className={styles.loadMoreRow}>
           <button
@@ -667,7 +672,7 @@ function ActivityPage() {
 
 function ActivityDetailPage() {
   const { activityId } = useParams();
-  const { refresh } = useSession();
+  const { me, refresh, liveDataRevision } = useSession();
   const [activity, setActivity] = useState<ActivityItem | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [requestError, setRequestError] = useState<unknown>(null);
@@ -691,7 +696,7 @@ function ActivityDetailPage() {
         setRequestError(error);
         setState("error");
       });
-  }, [activityId, reloadKey]);
+  }, [activityId, liveDataRevision, me?.account.version, reloadKey]);
 
   const retryActivity = () => {
     if (isUnauthenticatedError(requestError)) {
@@ -710,7 +715,9 @@ function ActivityDetailPage() {
         <p className={styles.eyebrow}>Detalhe da movimentação</p>
         <h1>Registro da caderneta</h1>
       </section>
-      {state === "loading" && <ActivitySkeleton rows={1} />}
+      {state === "loading" && (!activity || activity.id !== activityId) && (
+        <ActivitySkeleton rows={1} />
+      )}
       {state === "error" && requestError && (
         <ActivityErrorNotice
           detail
@@ -718,7 +725,7 @@ function ActivityDetailPage() {
           onRetry={retryActivity}
         />
       )}
-      {state === "ready" && activity && (
+      {activity && activity.id === activityId && (
         <ActivityDetailCard activity={activity} />
       )}
     </>
