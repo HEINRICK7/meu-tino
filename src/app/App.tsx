@@ -424,7 +424,7 @@ function HomePage() {
         <PushCard activeSubscriptions={me.push.activeSubscriptions} />
       </section>
 
-      <PixCard pix={me.pix} />
+      <PixCard pix={me.pix} balance={me.account.balance} />
 
       <section className={styles.sectionHeading}>
         <div>
@@ -448,7 +448,13 @@ function HomePage() {
   );
 }
 
-function PixCard({ pix }: { pix: MeResponse["pix"] }) {
+function PixCard({
+  pix,
+  balance,
+}: {
+  pix: MeResponse["pix"];
+  balance: MeResponse["account"]["balance"];
+}) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
   const configuration = pix?.enabled && pix.key && pix.copyPaste ? pix : null;
@@ -502,6 +508,12 @@ function PixCard({ pix }: { pix: MeResponse["pix"] }) {
             />
           </div>
           <div className={styles.pixDetails}>
+            <div className={styles.pixAmount}>
+              <span className={styles.pixLabel}>Valor para pagar</span>
+              <strong>
+                {formatMinorAmount(balance.minor, balance.currency)}
+              </strong>
+            </div>
             <p className={styles.pixInstruction}>
               Aponte a câmera do seu banco para pagar. Você também pode copiar o
               código abaixo.

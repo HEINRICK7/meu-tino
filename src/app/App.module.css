@@ -1164,6 +1164,23 @@ h3 {
   min-width: 0;
 }
 
+.pixAmount {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 2px;
+  padding: 12px 14px;
+  border: 1px solid #bfe8cd;
+  border-radius: 14px;
+  background: var(--color-primary-soft);
+}
+
+.pixAmount strong {
+  color: var(--color-primary-strong);
+  font-size: clamp(24px, 7vw, 32px);
+  letter-spacing: -0.05em;
+  line-height: 1.1;
+}
+
 .pixInstruction,
 .pixEmpty p {
   margin: 0 0 6px;
