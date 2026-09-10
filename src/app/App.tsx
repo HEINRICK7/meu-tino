@@ -39,6 +39,7 @@ type LiveNotification = {
 type LiveSnapshot = {
   accountVersion: number;
   activityId: string | null;
+  activityMarkerKnown: boolean;
 };
 
 const LIVE_POLL_INTERVAL_MS = 5000;
@@ -127,27 +128,56 @@ export default function App() {
     if (livePollInFlight.current) return;
     livePollInFlight.current = true;
     try {
-      const [nextMe, activityPage] = await Promise.all([
+      const [meResult, activityResult] = await Promise.allSettled([
         api.getMe(),
         api.listActivity({ limit: 1 }),
       ]);
-      const latestActivity = activityPage.items[0] ?? null;
+
+      if (meResult.status === "rejected") {
+        if (
+          meResult.reason instanceof ApiError &&
+          meResult.reason.status === 401
+        ) {
+          setMe(null);
+          setError(meResult.reason);
+          setStatus("anonymous");
+          liveSnapshot.current = null;
+        }
+        return;
+      }
+
+      const nextMe = meResult.value;
       const previous = liveSnapshot.current;
       const accountChanged =
         previous !== null && previous.accountVersion !== nextMe.account.version;
-      const activityChanged =
-        previous !== null &&
-        previous.activityId !== (latestActivity?.id ?? null);
 
       setMe(nextMe);
       setStatus("authenticated");
       setError(null);
+
+      if (activityResult.status === "rejected") {
+        liveSnapshot.current = {
+          accountVersion: nextMe.account.version,
+          activityId: previous?.activityId ?? null,
+          activityMarkerKnown: previous?.activityMarkerKnown ?? false,
+        };
+        return;
+      }
+
+      const latestActivity = activityResult.value.items[0] ?? null;
+      const latestActivityId = latestActivity?.id ?? null;
+      const activityMarkerBecameKnown = previous?.activityMarkerKnown !== true;
+      const activityChanged =
+        previous?.activityMarkerKnown === true &&
+        previous.activityId !== latestActivityId;
+
       liveSnapshot.current = {
         accountVersion: nextMe.account.version,
-        activityId: latestActivity?.id ?? null,
+        activityId: latestActivityId,
+        activityMarkerKnown: true,
       };
 
-      if (previous === null || accountChanged || activityChanged) {
+      if (activityMarkerBecameKnown || accountChanged || activityChanged) {
         setLiveDataRevision((revision) => revision + 1);
       }
       if (accountChanged || activityChanged) {
