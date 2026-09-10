@@ -20,7 +20,11 @@ import {
 } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import { api, ApiError, createIdempotencyKey } from "../shared/api/client";
-import type { ActivityItem, MeResponse } from "../shared/api/types";
+import type {
+  ActivityItem,
+  DebtPaymentIntent,
+  MeResponse,
+} from "../shared/api/types";
 import { formatDate, formatMinorAmount } from "../shared/formatting/money";
 import styles from "./App.module.css";
 
@@ -492,14 +496,58 @@ function PixCard({
 }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
+  const [intent, setIntent] = useState<DebtPaymentIntent | null>(null);
+  const [intentState, setIntentState] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [intentError, setIntentError] = useState<unknown>(null);
+  const [intentRetry, setIntentRetry] = useState(0);
+  const intentRequest = useRef<string | null>(null);
+  const intentKey = useRef<{ signature: string; key: string } | null>(null);
   const configuration = pix?.enabled && pix.key && pix.copyPaste ? pix : null;
 
+  useEffect(() => {
+    if (!configuration || balance.minor <= 0) {
+      setIntent(null);
+      setIntentState("ready");
+      setIntentError(null);
+      intentRequest.current = null;
+      return;
+    }
+
+    const intentSignature = `${balance.minor}:${balance.currency}:${configuration.key}`;
+    const requestSignature = `${intentSignature}:${intentRetry}`;
+    if (intentRequest.current === requestSignature) return;
+    intentRequest.current = requestSignature;
+    if (intentKey.current?.signature !== intentSignature) {
+      intentKey.current = {
+        signature: intentSignature,
+        key: createIdempotencyKey(),
+      };
+    }
+    setIntent(null);
+    setIntentState("loading");
+    setIntentError(null);
+    void api
+      .createPaymentIntent(balance.minor, {
+        idempotencyKey: intentKey.current.key,
+      })
+      .then((response) => {
+        setIntent(response.paymentIntent);
+        setIntentState("ready");
+      })
+      .catch((error: unknown) => {
+        setIntentError(error);
+        setIntentState("error");
+      });
+  }, [balance.currency, balance.minor, configuration?.key, intentRetry]);
+
   const copyPaste = async () => {
-    if (!configuration?.copyPaste) return;
+    if (!intent?.copyPaste) return;
     setCopied(false);
     setCopyError(false);
     try {
-      await copyText(configuration.copyPaste);
+      await copyText(intent.copyPaste);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2400);
     } catch {
@@ -530,11 +578,47 @@ function PixCard({
             </p>
           </div>
         </div>
+      ) : balance.minor <= 0 ? (
+        <div className={styles.pixEmpty}>
+          <QrCodeIcon />
+          <div>
+            <h3>Caderneta em dia</h3>
+            <p>Não há saldo em aberto para gerar uma cobrança Pix.</p>
+          </div>
+        </div>
+      ) : intentState === "loading" ? (
+        <div className={styles.pixEmpty}>
+          <QrCodeIcon />
+          <div>
+            <h3>Preparando seu Pix…</h3>
+            <p>Estamos vinculando o QR Code ao valor atual da sua caderneta.</p>
+          </div>
+        </div>
+      ) : intentState === "error" || !intent ? (
+        <div className={styles.pixEmpty}>
+          <QrCodeIcon />
+          <div>
+            <h3>Não foi possível preparar o Pix</h3>
+            <p>O saldo continua seguro. Tente gerar o código novamente.</p>
+            <button
+              className={styles.primaryButton}
+              type="button"
+              onClick={() => setIntentRetry((value) => value + 1)}
+            >
+              Tentar novamente
+            </button>
+            {intentError ? (
+              <span className={styles.pixCopyError}>
+                Confira sua conexão e tente novamente.
+              </span>
+            ) : null}
+          </div>
+        </div>
       ) : (
         <div className={styles.pixContent}>
           <div className={styles.pixQr} aria-label="QR Code Pix">
             <QRCodeSVG
-              value={configuration.copyPaste ?? ""}
+              value={intent.copyPaste}
               size={176}
               level="M"
               includeMargin
@@ -546,7 +630,7 @@ function PixCard({
             <div className={styles.pixAmount}>
               <span className={styles.pixLabel}>Valor para pagar</span>
               <strong>
-                {formatMinorAmount(balance.minor, balance.currency)}
+                {formatMinorAmount(intent.amountMinor, intent.currency)}
               </strong>
             </div>
             <p className={styles.pixInstruction}>
@@ -554,9 +638,9 @@ function PixCard({
               código abaixo.
             </p>
             <span className={styles.pixLabel}>Chave Pix</span>
-            <code className={styles.pixKey}>{configuration.key}</code>
+            <code className={styles.pixKey}>{intent.pixKey}</code>
             <span className={styles.pixLabel}>Código copia e cola</span>
-            <code className={styles.pixPayload}>{configuration.copyPaste}</code>
+            <code className={styles.pixPayload}>{intent.copyPaste}</code>
             <button
               className={styles.primaryButton}
               type="button"

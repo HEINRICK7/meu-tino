@@ -128,4 +128,66 @@ describe("customer channel API client", () => {
       expect.objectContaining({ cache: "no-store" }),
     );
   });
+
+  it("creates a customer-scoped Pix payment intent with an idempotency key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          paymentIntent: {
+            id: "intent-id",
+            customerId: "customer-id",
+            amountMinor: 1250,
+            currency: "BRL",
+            pixTxid: "TINOTEST123",
+            pixKey: "loja@example.com",
+            copyPaste: "000201PIX",
+            status: "PENDING",
+            createdAt: "2026-09-08T12:00:00Z",
+            expiresAt: "2026-09-08T12:30:00Z",
+            updatedAt: "2026-09-08T12:00:00Z",
+          },
+          replayed: false,
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.createPaymentIntent(1250)).resolves.toMatchObject({
+      paymentIntent: { amountMinor: 1250, pixTxid: "TINOTEST123" },
+    });
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/v1/me/payment-intents");
+    expect(init).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({ amount_minor: 1250 }),
+        cache: "no-store",
+      }),
+    );
+    expect(init.headers.get("Idempotency-Key")).toEqual(expect.any(String));
+  });
+
+  it("allows the PWA to replay the same logical Pix intent", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          paymentIntent: { amountMinor: 1250 },
+          replayed: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createPaymentIntent(1250, {
+      idempotencyKey: "pix-intent-replay",
+    });
+
+    expect(fetchMock.mock.calls[0][1].headers.get("Idempotency-Key")).toBe(
+      "pix-intent-replay",
+    );
+  });
 });

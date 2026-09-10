@@ -2,6 +2,7 @@ import type {
   ActivityItem,
   ActivityPage,
   ApiErrorPayload,
+  DebtPaymentIntentResponse,
   MeResponse,
   PushConfig,
 } from "./types";
@@ -65,6 +66,7 @@ export function createIdempotencyKey() {
 }
 
 type ActivationOptions = { idempotencyKey?: string };
+type PaymentIntentOptions = { idempotencyKey?: string };
 
 export const api = {
   getMe: () =>
@@ -90,6 +92,24 @@ export const api = {
     request<ActivityItem>(`/v1/me/activity/${encodeURIComponent(activityId)}`, {
       cache: "no-store",
     }),
+  createPaymentIntent: (
+    amountMinor: number,
+    options: PaymentIntentOptions = {},
+  ) => {
+    if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+      return Promise.reject(
+        new Error("amountMinor must be a positive integer"),
+      );
+    }
+    return request<DebtPaymentIntentResponse>("/v1/me/payment-intents", {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": options.idempotencyKey ?? createIdempotencyKey(),
+      },
+      body: JSON.stringify({ amount_minor: amountMinor }),
+      cache: "no-store",
+    });
+  },
   logout: () => request<void>("/v1/me/logout", { method: "POST" }),
   getPushConfig: async (): Promise<PushConfig> => {
     const payload = await request<PushConfigPayload>("/v1/me/push-config", {

@@ -39,3 +39,29 @@ export type ActivityPage = {
   asOf: string;
 };
 export type PushConfig = { enabled: boolean; vapidPublicKey: string | null };
+
+export type DebtPaymentIntent = {
+  id: string;
+  customerId: string;
+  amountMinor: number;
+  currency: string;
+  pixTxid: string;
+  pixKey: string;
+  copyPaste: string;
+  status:
+    | "PENDING"
+    | "EVIDENCE_FOUND"
+    | "AWAITING_MERCHANT_CONFIRMATION"
+    | "CONFIRMED"
+    | "CANCELLED"
+    | "EXPIRED"
+    | string;
+  createdAt: string;
+  expiresAt: string;
+  updatedAt: string;
+};
+
+export type DebtPaymentIntentResponse = {
+  paymentIntent: DebtPaymentIntent;
+  replayed: boolean;
+};
